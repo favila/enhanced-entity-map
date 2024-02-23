@@ -1,0 +1,5 @@
+{:paths ["src"]
+ :deps {org.clojure/clojure {:mvn/version "1.11.1"}
+        org.clojure/core.cache {:mvn/version "1.0.225"}
+        com.datomic/peer {:mvn/version "1.0.7075"}}
+ :aliases {:test {:extra-paths ["test"]}}}
