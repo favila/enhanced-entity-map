@@ -269,7 +269,9 @@ existing attribute.
 
 ## Change Log
 
+### v1.0.5 - 2024-05-04
 
+First release.
 
 ## Testing and Building
 
@@ -280,9 +282,16 @@ clojure -Xtest
 clojure -T:build clean
 clojure -T:build jar # cleans first
 
-# Go get a deploy token from https://clojars.org/tokens
+# prints version, date, github compare link for changelog
+# Remember to change the compare link to the last release.
+clojure -T:build changelog-header
 
+# Go get a deploy token from https://clojars.org/tokens
+# deploy also cleans and builds jar
 CLOJARS_USERNAME=username CLOJARS_PASSWORD=token clojure -T:build deploy
+
+# If above succeeds, it will print a git tag command of the deployed version.
+# Run it and push.
 ```
 
 ## License
