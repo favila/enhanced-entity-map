@@ -11,7 +11,8 @@
 
 (def basis (delay (b/create-basis {})))
 
-(def github-url "https://github.com/favila/enhanced-entity-map")
+(def github-path "/favila/enhanced-entity-map")
+(def github-url (str "https://github.com" github-path))
 
 (def jar-opts
   (delay
@@ -20,13 +21,23 @@
     :version    version
     :basis      @basis
     :scm        {:tag tag
-                 :url github-url}
-
+                 :url github-url
+                 :connection (str "scm:git:" github-url ".git")
+                 :developerConnection (str "scm:git:ssh://git@github.com" github-path ".git")}
+    :pom-data [[:description "A datomic peer entity map with assoc-ability, index control, and computed attributes."]
+               [:url github-url]
+               [:licenses
+                [:license
+                 [:name "MIT License"]
+                 [:url "https://opensource.org/license/mit"]]]
+               [:developers
+                [:developer
+                 [:name "Francis Avila"]]]]
     ;; copy-dir and jar opts
-    :src-dirs   ["src"]
+    :src-dirs ["src"]
     :target-dir "target/classes"
-    :class-dir  "target/classes"
-    :jar-file   (format "target/%s-%s.jar" (name lib) version)}))
+    :class-dir "target/classes"
+    :jar-file (format "target/%s-%s.jar" (name lib) version)}))
 
 (defn clean [_]
   (b/delete {:path "target"}))

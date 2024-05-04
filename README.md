@@ -1,11 +1,27 @@
 # Enhanced Entity Maps
 
 This provides a Datomic entity-map-like object (as returned from
-`datomic.api/entity`) which has a few additional abilities.
+`datomic.api/entity`) which is compatible with it and has a few additional
+abilities:
+
+* Can support metadata.
+* Can assoc arbitrary keys and values on to it.
+* Can compute and cache derived attributes via a multimethod.
+* Can do database reads using the :aevt index selectively.
 
 ## Installation
 
-Arifacts are hosted on clojars.
+deps.edn jar
+
+```
+net.clojars.favila/enhanced-entity-map {:mvn/version "1.0.6"}
+```
+
+project.clj
+
+```
+[net.clojars.favila/enhanced-entity-map "1.0.6"]
+```
 
 ## Status
 
@@ -269,7 +285,7 @@ existing attribute.
 
 ## Change Log
 
-### v1.0.5 - 2024-05-04
+### v1.0.6 - 2024-05-04
 
 First release.
 
@@ -288,7 +304,9 @@ clojure -T:build changelog-header
 
 # Go get a deploy token from https://clojars.org/tokens
 # deploy also cleans and builds jar
-CLOJARS_USERNAME=username CLOJARS_PASSWORD=token clojure -T:build deploy
+export CLOJARS_USERNAME=username
+export CLOJARS_PASSWORD=token
+clojure -T:build deploy
 
 # If above succeeds, it will print a git tag command of the deployed version.
 # Run it and push.
