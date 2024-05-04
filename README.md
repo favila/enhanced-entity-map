@@ -267,6 +267,10 @@ entity map's *database*!
 As a consequence, you can't use this feature compute a value for an 
 existing attribute.
 
+## Change Log
+
+
+
 ## Testing and Building
 
 (This is just to remind myself.)
@@ -274,8 +278,11 @@ existing attribute.
 ```shell
 clojure -Xtest
 clojure -T:build clean
-clojure -T:build jar
-clojure -T:build deploy
+clojure -T:build jar # cleans first
+
+# Go get a deploy token from https://clojars.org/tokens
+
+CLOJARS_USERNAME=username CLOJARS_PASSWORD=token clojure -T:build deploy
 ```
 
 ## License
