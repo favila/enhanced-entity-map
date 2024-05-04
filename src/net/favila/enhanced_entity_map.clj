@@ -4,6 +4,7 @@
   Public interface:
 
   * entity: Make an entity map like d/entity but with special powers:
+    * Can support metadata.
     * Can assoc values on to it.
     * Can compute and cache derived attributes. See entity-map-derived-attribute below.
     * Can do database reads using the :aevt index selectively.
@@ -33,7 +34,7 @@
    [datomic.query])
   (:import
    (clojure.core.cache BasicCache)
-   (clojure.lang Associative Counted ILookup IPersistentCollection MapEntry Seqable Util)
+   (clojure.lang Associative Counted ILookup IObj IPersistentCollection IPersistentSet MapEntry Seqable Util)
    (datomic Datom Entity)
    (datomic.db IDbImpl)
    (datomic.query EMapImpl EntityMap)
@@ -45,15 +46,17 @@
   [_enhanced-entity-map attribute-kw] attribute-kw)
 
 (defmulti entity-map-derived-attribute
-  "Given an entity map, keyword, and direction, returns a derived computed
-  attribute value on an enhanced entity map.
+  "Given an entity map and keyword from entity-map lookup,
+   return a derived computed attribute value.
 
-  The value (including nil) will be cached on the map."
+   This method is called implicitly by lookups on enhanced-entity-maps
+   if the attribute wasn't manually assoc-ed and does not exist on the database."
   entity-map-derived-attribute-dispatch
   :default ::not-implemented
   :hierarchy #'entity-map-derived-attribute-registry)
 
-(defmethod entity-map-derived-attribute ::not-implemented [_ _] nil)
+(defmethod entity-map-derived-attribute ::not-implemented [_eem _kw]
+  ::not-implemented)
 
 (defn- make-derived-attr-cache []
   (cw/basic-cache-factory {}))
@@ -63,7 +66,8 @@
 
 (defn- find-or-miss-derived-attr [attr-cache em attr]
   (let [v (cw/lookup-or-miss attr-cache attr entity-map-derived-attribute em)]
-    (MapEntry/create attr v)))
+    (when-not (identical? ::not-implemented v)
+      (MapEntry/create attr v))))
 
 (defn- not-nil-val [entry]
   (when (some? (val entry))
@@ -94,13 +98,17 @@
       (enhanced-entity* db eid)))
 
 (defn- lookup-vae [db e attr-rec]
-  (let [{:keys [id is-component]} attr-rec]
-    (let [xs (d/datoms db :vaet e id)]
-      (if is-component
-        (when-some [^Datom d (iterable-first xs)]
-          ;; Note: never ident! This is what EntityMap does.
-          (enhanced-entity* db (.e d)))
-        (not-cempty (into #{} (map #(.e ^Datom %)) xs))))))
+  (let [{:keys [id is-component]} attr-rec
+        xs (d/datoms db :vaet e id)]
+    ;; Note: reverse refs never produce ident keywords!
+    ;; This is what Datomic's EntityMap does.
+    (if is-component
+      (when-some [^Datom d (iterable-first xs)]
+        (enhanced-entity* db (.e d)))
+      (not-cempty
+       (into #{}
+             (map #(enhanced-entity* db (.e ^Datom %)))
+             xs)))))
 
 (defn- lookup-eav [db e attr-rec]
   (let [{:keys [id cardinality value-type]} attr-rec
@@ -142,6 +150,11 @@
     (d/touch x)
     x))
 
+(defn- rfirst
+  ([] nil)
+  ([r] r)
+  ([_ x] (reduced x)))
+
 (defn- touch-map
   [db eid touch-components?]
   (into {:db/id eid}
@@ -154,21 +167,18 @@
                       xform (cond-> (map :v)
 
                                     ref?
-                                    (comp (map #(enhanced-entity-or-ident db %)))
+                                    (comp (map (partial enhanced-entity-or-ident db)))
 
                                     (and touch-components? is-component ref?)
                                     (comp (map maybe-touch)))]
                   [ident
                    (if many?
                      (into #{} xform datoms)
-                     (transduce
-                      xform
-                      (fn
-                        ([] nil)
-                        ([r] r)
-                        ([_ x] (reduced x)))
-                      datoms))]))))
+                     (transduce xform rfirst datoms))]))))
         (d/datoms db :eavt eid)))
+
+(defprotocol AsEnhancedEntity
+  (-as-enhanced-entity [o] "Coerce object to an enhanced entity map."))
 
 (deftype EnhancedEntityMap
   ;; db is a non-history datomic db
@@ -177,7 +187,14 @@
   ;; datomic-attr-cache is a PersistentMap
   ;; derived-attr-cache is a clojure.core.cache.wrapped atom over a BasicCache.
   ;; (The core.cache wrapping is just for stampede protection, not eviction.)
-  [db eid assoc-cache ^:unsynchronized-mutable datomic-attr-cache derived-attr-cache]
+  [db ^long eid assoc-cache ^:unsynchronized-mutable datomic-attr-cache derived-attr-cache metadata]
+  AsEnhancedEntity
+  (-as-enhanced-entity [this] this)
+
+  IObj
+  (meta [_] metadata)
+  (withMeta [_ m] (EnhancedEntityMap. db eid assoc-cache datomic-attr-cache derived-attr-cache m))
+
   Associative
   (entryAt [this attr]
    ;; Like d/entity we return no-entry if the value is nil.
@@ -199,7 +216,7 @@
     (some? (.entryAt this attr)))
   (assoc [_ attr v]
     (assert (keyword? attr) "attr must be keyword")
-    (EnhancedEntityMap. db eid (assoc assoc-cache attr v) datomic-attr-cache derived-attr-cache))
+    (EnhancedEntityMap. db eid (assoc assoc-cache attr v) datomic-attr-cache derived-attr-cache metadata))
 
   EMapImpl
   (cache [_] datomic-attr-cache)
@@ -231,11 +248,11 @@
   (empty [_]
     (enhanced-entity* db eid {}))
   (equiv [_ other]
-   ;; Unfortunately we can never make this equivalent to EntityMaps
+   ;; We can never make this equivalent to EntityMaps
    ;; because EntityMaps do an explicit class check for EntityMap.
     (and
      (instance? EnhancedEntityMap other)
-     (== (unchecked-long eid) (unchecked-long (.eid ^EnhancedEntityMap other)))
+     (== eid (.eid ^EnhancedEntityMap other))
      (= (.getRawId ^IDbImpl db)
         (.getRawId ^IDbImpl (.db ^EnhancedEntityMap other)))
      (= assoc-cache (.-assoc-cache ^EnhancedEntityMap other))))
@@ -246,7 +263,9 @@
                             ;; Note: seq of d/entity does not include :db/id!
                             (dissoc :db/id))
           derived-attrs (deref-derived-attr-cache derived-attr-cache)
-          not-assoc-attr-or-nil (fn [[k v]] (or (nil? v) (contains? assoc-cache k)))]
+          not-assoc-attr-or-nil (fn [[k v]] (or (nil? v)
+                                                (identical? ::not-implemented v)
+                                                (contains? assoc-cache k)))]
       (concat
        assoc-cache
        (remove not-assoc-attr-or-nil datomic-attrs)
@@ -271,26 +290,29 @@
 (defmethod print-method EnhancedEntityMap [^EnhancedEntityMap eem ^Writer w]
   (print-method
    (-> (.-assoc-cache eem)
-       (into (.cache eem))
-       (into (deref-derived-attr-cache (.-derived-attr-cache eem))))
+       (into (remove (comp nil? val)) (.cache eem))
+       (into (remove (comp #(identical? ::not-implemented %) val))
+             (deref-derived-attr-cache (.-derived-attr-cache eem))))
    w))
 
 (defn- enhanced-entity*
   ([db eid]
-   (->EnhancedEntityMap db eid {}
-                        {:db/id eid}
-                        (make-derived-attr-cache)))
+   (->EnhancedEntityMap db eid {} {:db/id eid}
+                        (make-derived-attr-cache)
+                        nil))
   ([db eid attr-cache]
    (->EnhancedEntityMap db eid {}
                         ;; attr-cache should be a copy of another Entity cache
                         ;; so this is expected to have :db/id already
                         attr-cache
-                        (make-derived-attr-cache))))
+                        (make-derived-attr-cache)
+                        nil)))
 
 (defn entity
   "Returns an \"enhanced\" entity map satisfying all the interfaces of
   datomic.api/entity, but with additional abilities:
 
+   * It supports metadata.
    * It can optionally use AEVT indexes for database reads if it runs within
      the `prefer-aevt` macro, which makes it more suitable for map/filter-style
      code over many entity maps.
@@ -326,24 +348,32 @@
   (when-some [dbid (d/entid db eid)]
     (enhanced-entity* db dbid)))
 
-(declare as-enhanced-entity)
-
-(defn- convert-cache [cache]
-  (update-vals cache
-               (fn [x]
-                 (if (set? x)
-                   (into #{} (map as-enhanced-entity) x)
-                   (as-enhanced-entity x)))))
-
-(defn as-enhanced-entity
-  "Returns an enhanced-entity from an existing normal d/entity object, preserving its cache.
-  If not a normal entity-map, returns it unchanged."
-  [entity-map]
-  (if (instance? EntityMap entity-map)
+(extend-protocol AsEnhancedEntity
+  ;; Datomic's entity maps
+  EntityMap
+  (-as-enhanced-entity [entity-map]
     (enhanced-entity* (d/entity-db entity-map)
                       (.eid ^EntityMap entity-map)
-                      (convert-cache (.cache ^EntityMap entity-map)))
-    entity-map))
+                      ;; Reuse whatever is already cached
+                      (update-vals (.cache ^EntityMap entity-map)
+                                   -as-enhanced-entity)))
+
+  ;; What `set?` tests.
+  ;; These are presumed to be cardinality-many values inside entity maps.
+  IPersistentSet
+  (-as-enhanced-entity [xs]
+   (into #{} (map -as-enhanced-entity) xs))
+
+  Object
+  (-as-enhanced-entity [self] self))
+
+(defn as-enhanced-entity
+  "Returns an enhanced-entity from an existing normal d/entity object or
+   set of such objects. Copies the cache of any d/entity objects found.
+
+   Returns input unchanged if there are no d/entity objects."
+  [entity-map]
+  (-as-enhanced-entity entity-map))
 
 (defmacro prefer-aevt
   "Use the :aevt index for enhanced-entity-map lookups which aren't already
@@ -373,3 +403,8 @@
   "Returns true if x is a normal or enhanced entity map."
   [x]
   (instance? Entity x))
+
+(defn enhanced-entity-map?
+  "Returns true if x is an enhanced entity map."
+  [x]
+  (instance? EnhancedEntityMap x))
